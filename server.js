@@ -276,7 +276,7 @@ async function runFullAnalysis(url, browser, page) {
     // "Impatient Analyst" - Navigate ONCE
     console.log(`Page loading for ${url}... waiting for network to be idle...`);
     // Increase timeout to 30s to be safer
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 });
 
     // Run Lighthouse (will attach to the page, not re-navigate)
     const lighthouseScores = await runLighthouse(url, port);
