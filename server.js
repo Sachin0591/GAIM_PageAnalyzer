@@ -14,7 +14,7 @@ const PORT = 3000;
 
 // 3. --- Set up the Gemini AI Client ---
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }); // Use the model that works for you
+const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' }); // Use the model that works for you
 
 // --- AI Function 1 (Single Page Report) ---
 async function getSinglePageReport(metrics) {
@@ -140,7 +140,7 @@ async function runLighthouse(url, port) {
             ],
             // === THIS IS THE NEW FIX ===
             // Give Lighthouse 90 seconds (90000ms) to load the page, not 45
-            maxWaitForLoad: 90000
+            maxWaitForLoad: 150000
         };
 
         // This line will now run much faster.
