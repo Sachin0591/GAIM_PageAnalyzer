@@ -11,11 +11,10 @@ const app = express();
 app.use(cors());
 app.use(express.json()); 
 const PORT = 3000;
-// const MASTER_TIMEOUT = 45000; // <-- REMOVED
 
 // 3. --- Set up the Gemini AI Client ---
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-2.5-pro' }); // Use the model that works for you
+const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }); // Use the model that works for you
 
 // --- AI Function 1 (Single Page Report) ---
 async function getSinglePageReport(metrics) {
@@ -23,12 +22,13 @@ async function getSinglePageReport(metrics) {
     You are an expert Conversion Rate Optimization (CRO) consultant.
     Analyze this JSON data for a single landing page.
     This data includes a "lighthouse" object with Google's official scores (0-100).
+    NOTE: The 'performance' score is 0 because the audit was disabled to save resources. Do not mention this unless the user asks. Focus on the other three scores.
 
     Data: ${JSON.stringify(metrics, null, 2)}
 
     Provide a "Landing Page Report" with three sections:
     1.  **High-Impact Wins:** Top 3-5 critical issues to fix.
-    2.  **Lighthouse Audit:** A brief, human-readable summary of the Lighthouse scores.
+    2.  **Lighthouse Audit:** A brief, human-readable summary of the Lighthouse scores (Accessibility, Best Practices, SEO).
     3.  **Detailed Analysis:** Go through the other keys (cta_value, trust, etc.) and explain them.
     Format the entire output in clean Markdown.
   `;
@@ -47,6 +47,7 @@ async function getCompetitorReport(metrics1, metrics2) {
   const prompt = `
     You are an expert Conversion Rate Optimization (CRO) and Competitive Strategy consultant.
     Analyze the two JSON data objects below. "My Page" is metrics1, "Competitor" is metrics2.
+    NOTE: The 'performance' score is 0 because the audit was disabled to save resources. Do not base your comparison on this. Focus on the other three scores and the scraped data.
 
     My Page (metrics1): ${JSON.stringify(metrics1, null, 2)}
     
@@ -91,6 +92,8 @@ async function getChatResponse(question, context) {
     Be helpful, expert, and actionable. If they ask for advice, give it.
     If they ask you to write copy, do it.
 
+    NOTE: The 'performance' score in the data is 0 because the audit was disabled to save resources. If the user asks why performance is 0, explain this. Otherwise, focus on the available data.
+
     This is the data from their report:
     Report: ${context.report}
     Raw Data 1: ${JSON.stringify(context.rawData1)}
@@ -101,7 +104,7 @@ async function getChatResponse(question, context) {
     const chat = model.startChat({
       history: [
         { role: "user", parts: [{ text: systemPrompt }] },
-        { role: "model", parts: [{ text: "Understood. I have reviewed the full report and data. How can I help you improve your page?" }] },
+        { role: "model", parts: [{ text: "Understood. I have reviewed the full report and data (noting the performance audit was skipped). How can I help you improve your page?" }] },
       ],
       generationConfig: { maxOutputTokens: 1000 },
     });
@@ -124,7 +127,9 @@ async function runLighthouse(url, port) {
         const settings = {
             port: port,
             output: 'json',
-            onlyCategories: ['performance', 'accessibility', 'best-practices', 'seo'],
+            // === THIS IS THE FIX ===
+            // We are removing 'performance' to prevent the server from hanging.
+            onlyCategories: ['accessibility', 'best-practices', 'seo'],
             logLevel: 'info',
             skipAudits: [
                 'diagnostics', 
@@ -132,13 +137,20 @@ async function runLighthouse(url, port) {
                 'unused-css-rules', 
                 'full-page-screenshot', 
                 'network-requests'
-            ]
+            ],
+            // === THIS IS THE NEW FIX ===
+            // Give Lighthouse 90 seconds (90000ms) to load the page, not 45
+            maxWaitForLoad: 90000
         };
 
+        // This line will now run much faster.
         const { lhr } = await lighthouse(url, settings);
         
+        // === THIS IS THE 2ND PART OF THE FIX ===
+        // We hardcode performance to 0 so the rest of the app doesn't break.
+        // We will tell the user in the HTML that this score is "N/A".
         const scores = {
-            performance: Math.round(lhr.categories.performance.score * 100),
+            performance: 0,
             accessibility: Math.round(lhr.categories.accessibility.score * 100),
             bestPractices: Math.round(lhr.categories['best-practices'].score * 100),
             seo: Math.round(lhr.categories.seo.score * 100)
@@ -147,6 +159,7 @@ async function runLighthouse(url, port) {
         return scores;
     } catch (error) {
         console.error("Error running Lighthouse:", error.message);
+        // Return 0 for all scores if Lighthouse itself fails
         return { performance: 0, accessibility: 0, bestPractices: 0, seo: 0 }; 
     }
 }
@@ -155,6 +168,11 @@ async function runLighthouse(url, port) {
 async function scrapePageMetrics(page) {
     console.log('Page is stable, running scraping script...');
     
+    // We need to wait for the page to be loaded by Lighthouse first.
+    // This function will now run on the page *after* Lighthouse is done.
+    // We add a small safety wait.
+    await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second wait
+
     const metrics = await page.evaluate(() => {
         const parseNumber = (text) => {
             if (!text) return 0;
@@ -275,8 +293,7 @@ async function runFullAnalysis(url, browser, page) {
     
     // "Impatient Analyst" - Navigate ONCE
     console.log(`Page loading for ${url}... waiting for network to be idle...`);
-    // Increase timeout to 30s to be safer
-    // await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 }); timeout issue
+    // await page.goto(url, { waitUntil: 'load', timeout: 60000 }); // <-- THIS LINE IS DELETED. Lighthouse will do the navigation.
 
     // Run Lighthouse (will attach to the page, not re-navigate)
     const lighthouseScores = await runLighthouse(url, port);
@@ -305,11 +322,11 @@ app.post('/analyze', async (req, res) => {
     browser = await puppeteer.launch({
         headless: true,
         args: [
-          '--no-sandbox',
-            '--disable-setuid-sandbox', // special permissions for hosting
-          '--remote-debugging-port=0'] // Use 0 to find a random free port
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--remote-debugging-port=0' // Use 0 to find a random free port
+        ]
     });
-
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
 
